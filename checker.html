@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>출결 데이터 비교</title>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .container {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 6px;
+            text-align: center;
+        }
+        th {
+            background-color: #f2f2f2;
+            white-space: nowrap;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        /* 스타일 예시: 불일치(빨강), 완전 일치(초록) 등 */
+        .mismatch {
+            background-color: #ffe6e6; /* 행 전체 옅은 빨강 */
+        }
+        .cell-mismatch {
+            background-color: #ff9999; /* 셀 더 진한 빨강 */
+        }
+        .row-match {
+            background-color: #ccffcc!important; /* 완전 일치 시 초록 */
+        }
+        .row-missing-personal {
+            background-color: #ffe6e6;
+        }
+        .cell-nonzero-missing-personal {
+            background-color: #ff9999;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>출결 데이터 비교</h1>
+    
+    <div class="input-group">
+        <label for="personalFile">개인별 출결 파일:</label>
+        <input type="file" id="personalFile" accept=".xlsx">
+    </div>
+
+    <div class="input-group">
+        <label for="classFile">학급별 출결 파일:</label>
+        <input type="file" id="classFile" accept=".xlsx">
+    </div>
+
+    <button id="compareBtn" onclick="compareFiles()" disabled>비교하기</button>
+
+    <div id="result"></div>
+</div>
+
+<script>
+// <--- 파일 선택 시 버튼 활성/비활성화 --->
+let personalFile = null;
+let classFile = null;
+
+document.getElementById('personalFile').addEventListener('change', function(e) {
+    personalFile = e.target.files[0];
+    updateButtonState();
+});
+document.getElementById('classFile').addEventListener('change', function(e) {
+    classFile = e.target.files[0];
+    updateButtonState();
+});
+
+function updateButtonState() {
+    const compareBtn = document.getElementById('compareBtn');
+    compareBtn.disabled = !(personalFile && classFile);
+}
+
+// <--- hasAnyNonZero 함수 추가 --->
+function hasAnyNonZero(record) {
+    for (const cat of ['결석','지각','조퇴','결과']) {
+        for (const tp of ['질병','미인정','기타','인정']) {
+            if (record[cat][tp] !== 0) {
+                return true;
+            }
+        }
+    }
+    return false; // 모두 0이면 false
+}
+
+// (A) 개인별 데이터 파싱 (질병결과 등도 처리 가능)
+function processPersonalData(data) {
+    const summary = {};
+    data.forEach(record => {
+        const 번호 = record.번호;
+        const 성명 = record.성명;
+        if(!번호 || !성명) return;
+
+        const key = `${번호}_${성명}`;
+        if(!summary[key]) {
+            summary[key] = {
+                번호, 성명,
+                결석: { 질병:0, 미인정:0, 기타:0, 인정:0 },
+                지각: { 질병:0, 미인정:0, 기타:0, 인정:0 },
+                조퇴: { 질병:0, 미인정:0, 기타:0, 인정:0 },
+                결과: { 질병:0, 미인정:0, 기타:0, 인정:0 }
+            };
+        }
+
+        const type = record.출결구분 || ""; 
+        // "결과" 포함해서 분기
+        if (type.includes('결석') && !type.includes('결과')) {
+            if (type.includes('질병')) { summary[key].결석.질병++; }
+            else if (type.includes('미인정')) { summary[key].결석.미인정++; }
+            else if (type.includes('기타')) { summary[key].결석.기타++; }
+            else if (type.includes('인정')) { summary[key].결석.인정++; }
+        } else if (type.includes('지각')) {
+            if (type.includes('질병')) { summary[key].지각.질병++; }
+            else if (type.includes('미인정')) { summary[key].지각.미인정++; }
+            else if (type.includes('기타')) { summary[key].지각.기타++; }
+            else if (type.includes('인정')) { summary[key].지각.인정++; }
+        } else if (type.includes('조퇴')) {
+            if(type.includes('질병')) { summary[key].조퇴.질병++; }
+            else if(type.includes('미인정')) { summary[key].조퇴.미인정++; }
+            else if(type.includes('기타')) { summary[key].조퇴.기타++; }
+            else if(type.includes('인정')) { summary[key].조퇴.인정++; }
+        } else if (type.includes('결과')) {
+            if(type.includes('질병')) { summary[key].결과.질병++; }
+            else if(type.includes('미인정')) { summary[key].결과.미인정++; }
+            else if(type.includes('기타')) { summary[key].결과.기타++; }
+            else if(type.includes('인정')) { summary[key].결과.인정++; }
+        }
+    });
+    return summary;
+}
+
+// (B) Excel 파일 읽기
+function readExcelFile(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => {
+            try {
+                const data = e.target.result;
+                const wb = XLSX.read(data, {
+                    type: 'binary',
+                    cellStyles: true,
+                    cellDates: true,
+                    cellNF: true,
+                    cellFormulas: true
+                });
+                resolve(wb);
+            } catch(err) {
+                reject(err);
+            }
+        };
+        reader.onerror = err => reject(err);
+        reader.readAsBinaryString(file);
+    });
+}
+
+async function compareFiles() {
+    const resultDiv = document.getElementById('result');
+    resultDiv.innerHTML = '비교 중...';
+
+    try {
+        const personalWb = await readExcelFile(personalFile);
+        const personalSheet = personalWb.Sheets[personalWb.SheetNames[0]];
+        const personalData = XLSX.utils.sheet_to_json(personalSheet);
+        const personalSummary = processPersonalData(personalData);
+
+        const classWb = await readExcelFile(classFile);
+        const classSheet = classWb.Sheets[classWb.SheetNames[0]];
+
+        const html = displayCompareResult(personalSummary, classSheet);
+        resultDiv.innerHTML = html;
+
+    } catch(err) {
+        console.error(err);
+        resultDiv.innerHTML = `<div class="error">오류 발생: ${err.message}</div>`;
+    }
+}
+
+// (C) 셀 값 가져오기 (없으면 0)
+function getCellValue(sheet, row, col) {
+    const cell = sheet[XLSX.utils.encode_cell({r: row, c: col})];
+    return cell ? cell.v : 0;
+}
+
+// (D) 결과 테이블 표시
+function displayCompareResult(personalSummary, classSheet) {
+    let html = '<h3>비교 결과</h3>';
+    html += `
+    <table>
+        <tr>
+            <th rowspan="2">번호</th>
+            <th rowspan="2">성명</th>
+            <th rowspan="2">구분</th>
+            <th colspan="4">결석</th>
+            <th colspan="4">지각</th>
+            <th colspan="4">조퇴</th>
+            <th colspan="4">결과</th>
+        </tr>
+        <tr>
+            <th>질병</th><th>미인정</th><th>기타</th><th>인정</th>
+            <th>질병</th><th>미인정</th><th>기타</th><th>인정</th>
+            <th>질병</th><th>미인정</th><th>기타</th><th>인정</th>
+            <th>질병</th><th>미인정</th><th>기타</th><th>인정</th>
+        </tr>
+    `;
+
+    // 예시: 실제 학생 데이터가 rowIndex=9부터
+    let rowIndex = 9;
+    const seenKeys = new Set();
+
+    while(true) {
+        const 번호 = getCellValue(classSheet, rowIndex, 1);
+        const 성명 = getCellValue(classSheet, rowIndex, 2);
+        if(!번호 || !성명) break;
+
+        const key = `${번호}_${성명}`;
+        seenKeys.add(key);
+
+        // 학급별 record
+        const classRecord = {
+            결석: {
+                질병:getCellValue(classSheet,rowIndex,4),
+                미인정:getCellValue(classSheet,rowIndex,5),
+                기타:getCellValue(classSheet,rowIndex,6),
+                인정:getCellValue(classSheet,rowIndex,7)
+            },
+            지각: {
+                질병:getCellValue(classSheet,rowIndex,8),
+                미인정:getCellValue(classSheet,rowIndex,10),
+                기타:getCellValue(classSheet,rowIndex,11),
+                인정:getCellValue(classSheet,rowIndex,13)
+            },
+            조퇴: {
+                질병:getCellValue(classSheet,rowIndex,14),
+                미인정:getCellValue(classSheet,rowIndex,15),
+                기타:getCellValue(classSheet,rowIndex,17),
+                인정:getCellValue(classSheet,rowIndex,18)
+            },
+            결과: {
+                질병:getCellValue(classSheet,rowIndex,19),
+                미인정:getCellValue(classSheet,rowIndex,20),
+                기타:getCellValue(classSheet,rowIndex,23),
+                인정:getCellValue(classSheet,rowIndex,24)
+            }
+        };
+
+        const personalRecord = personalSummary[key] || null;
+        if(!personalRecord) {
+            // 개인별 없음
+            const nonZero = hasAnyNonZero(classRecord);
+            if(nonZero) {
+                // 0 아닌 값이 있으면 불일치
+                html += `
+                <tr class="row-missing-personal">
+                    <td rowspan="2">${번호}</td>
+                    <td rowspan="2">${성명}</td>
+                    <td>개인별</td>
+                    <td colspan="16" style="color:red;">개인별 데이터 없음</td>
+                </tr>
+                <tr class="row-missing-personal">
+                    <td>학급별</td>
+                    ${generateDataCellsMissingPersonal(classRecord)}
+                </tr>
+                `;
+            } else {
+                // 전부 0이면 일치 → 초록
+                html += `
+                <tr class="row-match">
+                    <td rowspan="2">${번호}</td>
+                    <td rowspan="2">${성명}</td>
+                    <td>개인별</td>
+                    <td colspan="16" style="color:green;">개인별 데이터 없음 & 학급별도 전부 0 (일치)</td>
+                </tr>
+                <tr class="row-match">
+                    <td>학급별</td>
+                    ${generateAllZeroCells(classRecord)}
+                </tr>
+                `;
+            }
+        } else {
+            // 개인별+학급별 둘 다
+            const mismatchMap = checkMismatchMap(personalRecord,classRecord);
+            const rowClass = mismatchMap.hasMismatch ? 'mismatch' : 'row-match';
+            html += `
+            <tr class="${rowClass}">
+                <td rowspan="2">${번호}</td>
+                <td rowspan="2">${성명}</td>
+                <td>개인별</td>
+                ${generateDataCells(personalRecord, mismatchMap.personalCells)}
+            </tr>
+            <tr class="${rowClass}">
+                <td>학급별</td>
+                ${generateDataCells(classRecord, mismatchMap.classCells)}
+            </tr>
+            `;
+        }
+
+        rowIndex++;
+    }
+
+    // 개인별만 있고 학급에는 없는
+    const personalKeys = Object.keys(personalSummary);
+    const onlyInPersonal = personalKeys.filter(k => !seenKeys.has(k));
+    onlyInPersonal.forEach(k => {
+        const p = personalSummary[k];
+        const nonZero = hasAnyNonZero(p);
+        if(nonZero) {
+            html += `
+            <tr class="row-missing-personal">
+                <td rowspan="2">${p.번호}</td>
+                <td rowspan="2">${p.성명}</td>
+                <td>개인별</td>
+                ${generateDataCells(p,null)}
+            </tr>
+            <tr class="row-missing-personal">
+                <td>학급별</td>
+                <td colspan="16" style="color:red;">학급별 데이터 없음</td>
+            </tr>
+            `;
+        } else {
+            // 전부 0이면 row-match
+            html += `
+            <tr class="row-match">
+                <td rowspan="2">${p.번호}</td>
+                <td rowspan="2">${p.성명}</td>
+                <td>개인별</td>
+                ${generateAllZeroCells(p,true)}
+            </tr>
+            <tr class="row-match">
+                <td>학급별</td>
+                <td colspan="16" style="color:green;">학급별 데이터 없음 & 개인별도 전부 0 (일치)</td>
+            </tr>
+            `;
+        }
+    });
+
+    html += `</table>`;
+    return html;
+}
+
+// (E) 개인별 vs 학급별 항목 비교
+function checkMismatchMap(personal,cls) {
+    const mismatchMap = {
+        hasMismatch: false,
+        personalCells:{결석:{},지각:{},조퇴:{},결과:{}},
+        classCells:{결석:{},지각:{},조퇴:{},결과:{}}
+    };
+    const cats = ['결석','지각','조퇴','결과'];
+    const tps  = ['질병','미인정','기타','인정'];
+    for(const cat of cats) {
+        if(!personal[cat]) personal[cat] = {질병:0,미인정:0,기타:0,인정:0};
+        if(!cls[cat])      cls[cat]      = {질병:0,미인정:0,기타:0,인정:0};
+        for(const tp of tps) {
+            const pVal = personal[cat][tp]||0;
+            const cVal = cls[cat][tp]||0;
+            const isDiff = pVal !== cVal;
+            mismatchMap.personalCells[cat][tp] = isDiff;
+            mismatchMap.classCells[cat][tp]    = isDiff;
+            if(isDiff) mismatchMap.hasMismatch = true;
+        }
+    }
+    return mismatchMap;
+}
+
+// (F) 학급별만 있는 경우(개인별 없음)에서 0 아닌 셀만 진한 빨강
+function generateDataCellsMissingPersonal(clsRec) {
+    let html = '';
+    for(const cat of ['결석','지각','조퇴','결과']) {
+        for(const tp of ['질병','미인정','기타','인정']) {
+            const v = clsRec[cat][tp]||0;
+            const cellClass = (v!==0) ? 'cell-nonzero-missing-personal' : '';
+            html += `<td class="${cellClass}">${v}</td>`;
+        }
+    }
+    return html;
+}
+
+// (G) 16칸 모두 0인 경우를 '초록'으로 찍기
+function generateAllZeroCells(record, isPersonal=false) {
+    let html = '';
+    for(const cat of ['결석','지각','조퇴','결과']) {
+        for(const tp of ['질병','미인정','기타','인정']) {
+            html += `<td style="background-color:#ccffcc;">0</td>`;
+        }
+    }
+    return html;
+}
+
+// (H) 일반적으로 둘 다 존재할 때: mismatchCells=true 이면 빨강
+function generateDataCells(record, mismatchCells) {
+    let html = '';
+    for(const cat of ['결석','지각','조퇴','결과']) {
+        for(const tp of ['질병','미인정','기타','인정']) {
+            const v = record[cat][tp]||0;
+            let tdClass = '';
+            if(mismatchCells && mismatchCells[cat] && mismatchCells[cat][tp]) {
+                tdClass = 'cell-mismatch';
+            }
+            html += `<td class="${tdClass}">${v}</td>`;
+        }
+    }
+    return html;
+}
+</script>
+</body>
+</html>
